@@ -168,6 +168,7 @@ ggplot2::ggplot(normalized_data_to_plot, ggplot2::aes(x=cpm, color=sample)) +
   ggplot2::geom_density() +
   ggplot2::labs(title="Normalized cIN and cExN RNASeq Samples", y="density of log2-CPM", x="")
 ```
+
 The density graph of the data set looks like it follows a bimodal distribution.
 
 ## Intepret, and Document
