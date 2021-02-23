@@ -1,0 +1,207 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+Install necessary packages.
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))    
+  install.packages("BiocManager")
+if (!requireNamespace("GEOmetadb", quietly = TRUE))    
+  BiocManager::install("GEOmetadb")
+if (!requireNamespace("edgeR", quietly = TRUE))
+  BiocManager::install("edgeR")
+if (!requireNamespace("ggplot2", quietly = TRUE))
+  BiocManager::install("ggplot2")
+if (!requireNamespace("reshape2", quietly = TRUE))
+  BiocManager::install("reshape2")
+if (!requireNamespace("HGNChelper", quietly = TRUE))
+  BiocManager::install("HGNChelper")
+```
+
+## Select an Expression Data Set.
+
+Get the data for my chosen GEO id. I chose to work with the data set from an experiment that uses RNA-sequencing to study stem cell derived cortical excitatory (cExN) and cortical inhibitory (cIN) neurons from three individuals with varying affectation of autism syndrome disorder (ASD) (Lewis, Meganathan and Baldridge 2019).
+```{r}
+myGEOID <- 'GSE129806'
+suppFiles = GEOquery::getGEOSuppFiles(myGEOID)
+```
+
+Read the data in. There are 2 files provided one with the RPKM data and one with the raw counts data. I will work with the second file which has the counts data.
+```{r}
+fileNames = rownames(suppFiles)
+data <- read.delim(fileNames[2], check.names=FALSE, header=TRUE)
+```
+
+Check what the columns represent. They represent the cExN or cIN samples from the 4 individuals. "UC" prefix represents unaffected control group individual. "AP" prefix represents affected proband individual. "IS" prefix represents the intermediated phenotype sister. "UM" prefix respesents unaffected mother.
+```{r}
+colnames(data)
+```
+
+## Clean the data and map to HUGO symbols
+Rename column "name" to "gene_id" for more clarity.
+```{r}
+colnames(data)[1] <- 'gene_id'
+```
+
+Remove any NAs.
+```{r}
+na.omit(data)
+```
+
+See how many genes we have. 
+```{r}
+dim(data)
+```
+
+Take a look at the genes in the data set and check for duplicates.
+```{r}
+sort(table(data$gene_id), decreasing = TRUE)[1:25]
+```
+Looking at the results, there are no duplicates.
+However, looks like there are gene symbols mistakenly converted to date by Excel. I will remove these dates as it's unclear what genes they were converted from.
+```{r}
+data <- data[!grepl('^[0-9]{1,2}[-][a-zA-Z]{3}$', data$gene_id),]
+```
+
+Check the row names to see what they are. Rename each row to the gene id.
+```{r}
+rownames(data)[1:10]
+rownames(data) <- data$gene_id
+```
+
+Check if the symbols are all HGNC or if they are up to date using HGNCHelper.
+```{r}
+replacements <- HGNChelper::checkGeneSymbols(data$gene_id)
+# Update the gene id with the newest HGNC symbols if available
+data$gene_id <- ifelse(!replacements$Approved & !is.na(replacements$Suggested.Symbol), replacements$Suggested.Symbol, replacements$x)
+```
+
+See how many of the remaining gene_ids could not be mapped to a HGNC symbol. Some of these include
+long non-coding RNAs and pseudogenes.
+```{r}
+not_mapped <- length(which(!HGNChelper::checkGeneSymbols(data$gene_id)$Approved))
+```
+
+In the experiment, there were at least 3 or more biological replicates for each subject. I will use n=3 to perform removal of features without at least 1 read per million in 3 of the samples. Use edgeR package to calculate CPM and remove low counts.
+```{r}
+cpms = edgeR::cpm(data[,3:34])
+rownames(cpms) <- data[,1]
+
+keep = rowSums(cpms > 1) >= 3
+data_filtered = data[keep,]
+rows_removed = dim(data)[1]-dim(data_filtered)[1]
+```
+
+Check the number of genes now.
+```{r}
+dim(data_filtered)
+```
+
+Create a grouping from the data set.
+```{r}
+# Based on code from lecture 4
+samples <- data.frame(lapply(colnames(data)[3:34], FUN=function(x){unlist(strsplit(x, split="_"))[c(1,2)]}))
+colnames(samples) = colnames(data)[3:34]
+rownames(samples) = c("patients", "cell_type")
+samples <- data.frame(t(samples))
+```
+
+## Apply Normalization
+
+I will apply TMM to the data set. I chose to use this method because most of the genes were not differentially expressed and that the RNA seq data does not to be modified. 
+```{r}
+# Based on code from lecture 4
+data_filtered_matrix <- as.matrix(data_filtered[,3:34])
+rownames(data_filtered_matrix) <- data_filtered$gene_id
+d = edgeR::DGEList(counts=data_filtered_matrix, group=samples$cell_type)
+```
+
+Calculate the normalization factor and get it.
+```{r}
+# Based on code from lecture 4
+d = edgeR::calcNormFactors(d)
+normalized_counts <- edgeR::cpm(d)
+```
+
+Modify the regular data set for plotting.
+```{r}
+data_to_plot <- reshape2::melt((edgeR::cpm(data_filtered[,3:34], log=TRUE)))
+colnames(data_to_plot) <- c("gene_id", "sample", "cpm")
+```
+
+Modify the normalized data set for plotting.
+```{r}
+normalized_data_to_plot <- reshape2::melt(log2(normalized_counts))
+colnames(normalized_data_to_plot) <- c("gene_id", "sample", "cpm")
+```
+
+Create a pre-normalized boxplot to visualize the data.
+```{r}
+ggplot2::ggplot(data_to_plot, ggplot2::aes(x=sample, y=cpm)) +
+  ggplot2::geom_boxplot() + 
+  ggplot2::theme(axis.text.x=ggplot2::element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  ggplot2::labs(title="Original cIN and cExN RNASeq Samples", y="log2-CPM")
+```
+
+Create a normalized boxplot to visualize the data.
+```{r}
+ggplot2::ggplot(normalized_data_to_plot, ggplot2::aes(x=sample, y=cpm)) +
+  ggplot2::geom_boxplot() + 
+  ggplot2::theme(axis.text.x=ggplot2::element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  ggplot2::labs(title="Normalized cIN and cExN RNASeq Samples", y="log2-CPM")
+```
+
+Create a pre-normalized density plot to visualize the data.
+```{r}
+ggplot2::ggplot(data_to_plot, ggplot2::aes(x=cpm, color=sample)) +
+  ggplot2::geom_density() +
+  ggplot2::labs(title="Original cIN and cExN RNASeq Samples", y="density of log2-CPM", x="")
+```
+
+Create a normalized density plot to visualize the data.
+```{r}
+ggplot2::ggplot(normalized_data_to_plot, ggplot2::aes(x=cpm, color=sample)) +
+  ggplot2::geom_density() +
+  ggplot2::labs(title="Normalized cIN and cExN RNASeq Samples", y="density of log2-CPM", x="")
+```
+The density graph of the data set looks like it follows a bimodal distribution.
+
+## Intepret, and Document
+
+### What are the control and test conditions of the dataset?
+Looking at the data set and the paper, the test condition is the cortical excitatory (cExN) and cortical inhibitory (cIN) neurons from the three first-degree relatives with absent, intermediate and severe expressivity of autism syndrome disorder (ASD). The control condition is the cExN and cIN neurons from the unrelated individual. The samples of the three first-degree relatives are prefixed with UM (Unaffected mother), IS (Intermediated Sister) and AP (Affected proband). The sample of the unrelated individual is prefixed with UC (Unrelated, unaffected control).
+
+### Why is the dataset of interest to you?
+This data set is interesting to me because I am currently working in a lab that does research related to autism spectrum disorder.
+
+### Were there expression values that were not unique for specific genes? How did you handle these?
+There weren't multiple expression values that mapped to a single gene.
+
+### Were there expression values that could not be mapped to current HUGO symbols?
+Yes there were `r not_mapped` expression values that could not be
+mapped to a current HUGO symbol.
+
+### How many outliers were removed?
+`r rows_removed` outliers were removed.
+
+### How did you handle replicates?
+Excluding the control cell line, there were 3 biological replicates from each of the two clonal lines for each test subject. For now, I decided to keep the replicates separate and analyze them independently.
+
+### What is the final coverage of your dataset?
+There was approximately 30 million reads per sample according to the paper (Lewis, Meganathan and Baldridge 2019)
+
+## References
+* Lewis, E.M.A., Meganathan, K., Baldridge, D. et al. Cellular and molecular characterization of multiplex autism in human induced pluripotent stem cell-derived neurons. Molecular Autism 10, 51 (2019). https://doi.org/10.1186/s13229-019-0306-0
+* Robinson, M.D., Oshlack, A. A scaling normalization method for differential expression analysis of RNA-seq data. Genome Biol 11, R25 (2010). https://doi.org/10.1186/gb-2010-11-3-r25
+* Martin Morgan (2019). BiocManager: Access the Bioconductor Project Package Repository. R package version 1.30.10. https://CRAN.R-project.org/package=BiocManager
+* Zhu Y, Davis S, Stephens R, Meltzer PS, Chen Y. GEOmetadb: powerful alternative search engine for the Gene Expression Omnibus. Bioinformatics. 2008 Dec 1;24(23):2798-800. doi:10.1093/bioinformatics/btn520. Epub 2008 Oct 7. PubMed PMID: 18842599; PubMed Central PMCID:
+  PMC2639278.
+* Levi Waldron and Markus Riester (2019). HGNChelper: Identify and Correct Invalid HGNC Human Gene Symbols and MGI Mouse Gene Symbols. R package version 0.8.1. https://github.com/waldronlab/HGNChelper
+* H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2016.
+* Hadley Wickham (2007). Reshaping Data with the reshape Package. Journal of Statistical Software, 21(12), 1-20. URL http://www.jstatsoft.org/v21/i12/.
+* Robinson MD, McCarthy DJ and Smyth GK (2010). edgeR: a Bioconductor package for differential expression analysis of digital gene expression data. Bioinformatics 26, 139-140
+* McCarthy DJ, Chen Y and Smyth GK (2012). Differential expression analysis of multifactor RNA-Seq experiments with respect to biological variation. Nucleic Acids Research 40, 4288-4297
